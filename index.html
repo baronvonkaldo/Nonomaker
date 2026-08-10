@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Nonomaker</title>
+<title>Nonogram → PUZ-PRE v3</title>
 <style>
   :root{
     --paper: #eef1f4;
@@ -434,14 +434,24 @@
     return '-' + v.toString(16).padStart(2,'0');
   }
 
+  function encodePadding(zeros){
+    // Documented rule only covers 0-40 explicitly (single char 0-20, one
+    // 'z' prefix + char for 21-40). For larger boards zeros can exceed 40,
+    // so this extends the same pattern: every additional 20 zeros prepends
+    // another 'z', with the final character encoding the 0-20 remainder.
+    let z = '';
+    while(zeros > 20){
+      z += 'z';
+      zeros -= 20;
+    }
+    return z + String.fromCharCode(102 + zeros); // 'f' + remaining zeros
+  }
+
   function encodeGroup(clues, G){
     const rev = clues.slice().reverse();
     const s = rev.map(encodeValue).join('');
     const zeros = G - clues.length;
-    const pad = zeros <= 20
-      ? String.fromCharCode(102 + zeros)          // 'f' + zeros
-      : 'z' + String.fromCharCode(102 + (zeros-20));
-    return s + pad;
+    return s + encodePadding(zeros);
   }
 
   function generateLink(){
