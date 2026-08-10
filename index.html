@@ -1,0 +1,791 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nonomaker</title>
+<style>
+  :root{
+    --paper: #eef1f4;
+    --paper-line: #c7d0da;
+    --ink: #1b2740;
+    --ink-soft: #47546c;
+    --blue: #2c3e63;
+    --blue-deep: #1b2740;
+    --ochre: #b9791f;
+    --ochre-soft: #e8c98a;
+    --grid-line: #aab6c4;
+    --grid-line-strong: #6f7f95;
+    --danger: #a8402f;
+    --mono: 'JetBrains Mono', 'IBM Plex Mono', 'SFMono-Regular', Menlo, Consolas, monospace;
+    --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  }
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    background:
+      linear-gradient(var(--paper-line) 1px, transparent 1px) 0 0/28px 28px,
+      linear-gradient(90deg, var(--paper-line) 1px, transparent 1px) 0 0/28px 28px,
+      var(--paper);
+    color:var(--ink);
+    font-family:var(--sans);
+    min-height:100vh;
+    padding:32px 20px 80px;
+  }
+  .wrap{max-width:1080px;margin:0 auto;}
+
+  header{margin-bottom:28px;border-bottom:2px solid var(--grid-line-strong);padding-bottom:18px;}
+  .eyebrow{
+    font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--blue);font-weight:600;margin:0 0 6px;
+  }
+  h1{margin:0 0 6px;font-size:28px;font-weight:700;letter-spacing:-0.01em;color:var(--blue-deep);}
+  .sub{margin:0;color:var(--ink-soft);font-size:14.5px;max-width:640px;line-height:1.5;}
+
+  .panel{
+    background:#fbfcfd;
+    border:1.5px solid var(--grid-line-strong);
+    border-radius:2px;
+    padding:20px;
+    margin-bottom:20px;
+    box-shadow: 3px 3px 0 rgba(27,39,64,0.06);
+  }
+  .panel h2{
+    margin:0 0 14px;font-size:12px;letter-spacing:.1em;text-transform:uppercase;
+    color:var(--blue);font-family:var(--mono);font-weight:600;
+    display:flex;align-items:center;gap:8px;
+  }
+  .panel h2::before{content:'';width:8px;height:8px;background:var(--ochre);display:inline-block;}
+
+  .controls-row{display:flex;flex-wrap:wrap;gap:20px;align-items:end;margin-bottom:16px;}
+  .field{display:flex;flex-direction:column;gap:4px;}
+  .field label{font-size:11px;color:var(--ink-soft);font-weight:600;letter-spacing:.03em;text-transform:uppercase;}
+  .field input[type=number]{
+    width:76px;padding:7px 8px;border:1.5px solid var(--grid-line-strong);border-radius:2px;
+    font-family:var(--mono);font-size:14px;background:#fff;color:var(--ink);
+  }
+  button{
+    font-family:var(--sans);font-weight:600;font-size:13px;letter-spacing:.01em;
+    border:1.5px solid var(--blue-deep);border-radius:2px;padding:8px 14px;cursor:pointer;
+    background:#fff;color:var(--blue-deep);transition:transform .05s ease, background .15s ease;
+  }
+  button:hover{background:var(--blue-deep);color:#fff;}
+  button:active{transform:translateY(1px);}
+  button.primary{background:var(--blue-deep);color:#fff;}
+  button.primary:hover{background:var(--blue);}
+  button.ghost{border-color:var(--grid-line-strong);color:var(--ink-soft);}
+  button.ghost:hover{background:var(--ink-soft);color:#fff;}
+  button.ochre{border-color:var(--ochre);color:var(--ochre);}
+  button.ochre:hover{background:var(--ochre);color:#fff;}
+  button:disabled{opacity:.4;cursor:not-allowed;}
+  button:disabled:hover{background:#fff;color:var(--blue-deep);}
+
+  .btn-row{display:flex;gap:8px;flex-wrap:wrap;}
+
+  /* --- Grid area --- */
+  .grid-scroll{overflow:auto;padding-bottom:6px;}
+  .panel.breakout{
+    width:fit-content;
+    max-width:95vw;
+    margin-left:50%;
+    transform:translateX(-50%);
+  }
+  .nonogram-table{border-collapse:collapse;user-select:none;table-layout:fixed;}
+  .nonogram-table td{
+    width:24px;height:24px;text-align:center;vertical-align:middle;
+    font-family:var(--mono);font-size:12px;font-weight:600;color:var(--ink-soft);
+    border:1px solid var(--grid-line);
+  }
+  .cell{
+    cursor:pointer;background:#fff;border:1px solid var(--grid-line);
+  }
+  .cell.filled{background:var(--blue-deep);}
+  .cell:hover{outline:1.5px solid var(--ochre);outline-offset:-1.5px;}
+  .clue-cell{
+    background:#eef1f4;color:var(--blue-deep);white-space:nowrap;padding:0 4px;
+  }
+  .clue-cell.col-clue{writing-mode:horizontal-tb;}
+  .corner-cell{background:transparent;border:none;}
+
+  /* thicker separator every 5 */
+  .sep-right{border-right:2px solid var(--grid-line-strong);}
+  .sep-bottom{border-bottom:2px solid var(--grid-line-strong);}
+  .boundary-right{border-right:2.5px solid var(--ochre);}
+  .boundary-bottom{border-bottom:2.5px solid var(--ochre);}
+
+  textarea{
+    width:100%;min-height:130px;font-family:var(--mono);font-size:12px;line-height:1.5;
+    padding:12px;border:1.5px solid var(--grid-line-strong);border-radius:2px;
+    background:#10182a;color:#c9d6e8;resize:vertical;
+  }
+  .meta-row{display:flex;justify-content:space-between;align-items:center;margin:10px 0 8px;flex-wrap:wrap;gap:8px;}
+  .meta{font-family:var(--mono);font-size:11.5px;color:var(--ink-soft);}
+  .import-box{display:flex;flex-direction:column;gap:8px;margin-top:14px;}
+  .import-box textarea{min-height:90px;color:var(--ink);background:#fff;}
+  .hint{font-size:12px;color:var(--ink-soft);line-height:1.5;}
+  .copy-flash{color:var(--ochre);font-weight:600;font-family:var(--mono);font-size:11.5px;opacity:0;transition:opacity .2s;}
+  .copy-flash.show{opacity:1;}
+  code{background:#e4e9ee;padding:1px 5px;border-radius:2px;font-family:var(--mono);font-size:12px;}
+  .file-btn{
+    font-family:var(--sans);font-weight:600;font-size:13px;border:1.5px solid var(--ochre);border-radius:2px;
+    padding:8px 14px;cursor:pointer;background:#fff;color:var(--ochre);display:inline-block;
+  }
+  .file-btn:hover{background:var(--ochre);color:#fff;}
+  #importCanvas{cursor:crosshair;background:#fff;touch-action:none;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <p class="eyebrow">Grid → clues → pzprv3 text</p>
+    <h1>Nonogram → PUZ-PRE v3</h1>
+    <p class="sub">Paint the solved picture, and this generates the exact text block you can paste into PUZ-PRE v3's
+      "read data from text" import for a nonogram — <code>pzprv3/nonogram/W/H/…</code>. Clue counts and grid size
+      are handled automatically.</p>
+  </header>
+
+  <div class="panel">
+    <h2>1 — Board size</h2>
+    <div class="controls-row">
+      <div class="field">
+        <label for="widthInput">Width (columns)</label>
+        <input type="number" id="widthInput" min="1" max="150" value="15">
+      </div>
+      <div class="field">
+        <label for="heightInput">Height (rows)</label>
+        <input type="number" id="heightInput" min="1" max="150" value="15">
+      </div>
+      <button id="resizeBtn">Apply size</button>
+      <button id="clearBtn" class="ghost">Clear grid</button>
+      <button id="invertBtn" class="ghost">Invert</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>2 — Import from a screenshot (optional)</h2>
+    <p class="hint">Upload a screenshot of the completed picture, then drag the two ochre handles onto the
+      outer edges of the <em>grid itself</em> (not the clue numbers). The overlay divides that region into your
+      board's rows and columns — line it up with the picture, adjust the threshold until the green preview
+      matches the filled squares, then apply it to the grid below.</p>
+    <div class="btn-row" style="margin:10px 0 14px;">
+      <label class="file-btn" for="imageInput">Choose screenshot…</label>
+      <input type="file" id="imageInput" accept="image/*" style="display:none;">
+      <span class="meta" id="imageFileName">No image loaded</span>
+    </div>
+
+    <div id="importCanvasWrap" style="display:none;">
+      <div class="grid-scroll">
+        <canvas id="importCanvas"></canvas>
+      </div>
+      <div class="controls-row" style="margin-top:14px;">
+        <div class="field" style="width:220px;">
+          <label for="thresholdInput">Fill threshold — <span id="thresholdVal">128</span></label>
+          <input type="range" id="thresholdInput" min="0" max="255" value="128" style="width:220px;">
+        </div>
+        <div class="field">
+          <label>&nbsp;</label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--ink-soft);font-weight:500;">
+            <input type="checkbox" id="invertInput"> Invert (light squares = filled)
+          </label>
+        </div>
+        <button id="applyDetectionBtn" class="primary">Apply detection to grid</button>
+      </div>
+      <p class="hint" style="margin-top:8px;">Preview shading is a guide, not the final answer — after applying,
+        correct any misread cells by clicking them in the grid below.</p>
+    </div>
+  </div>
+
+  <div class="panel breakout">
+    <h2>3 — Paint / fine-tune the solution</h2>
+    <div class="grid-scroll">
+      <table class="nonogram-table" id="gridTable"></table>
+    </div>
+    <p class="hint">Click a cell to fill it, click again to clear it. Click-and-drag paints multiple cells at once.
+      Large boards scroll within this panel — it only widens up to 95% of your screen.</p>
+  </div>
+
+  <div class="panel">
+    <h2>4 — Or paste a solved grid as text</h2>
+    <div class="import-box" style="margin-top:0;">
+      <label style="font-size:11px;color:var(--ink-soft);font-weight:600;letter-spacing:.03em;text-transform:uppercase;">
+        One row per line, <code>#</code>/<code>X</code>/<code>1</code> = filled, anything else = empty
+      </label>
+      <textarea id="importText" placeholder="##..#
+.#.##
+#####"></textarea>
+      <div class="btn-row">
+        <button id="importBtn" class="ochre">Load into grid</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>5 — PUZ-PRE v3 text</h2>
+    <div class="meta-row">
+      <span class="meta" id="metaInfo">— </span>
+      <div class="btn-row">
+        <button id="copyBtn" class="primary">Copy text</button>
+        <span class="copy-flash" id="copyFlash">Copied</span>
+      </div>
+    </div>
+    <textarea id="output" readonly></textarea>
+  </div>
+
+  <div class="panel">
+    <h2>6 — Shareable link</h2>
+    <p class="hint">Encodes the same grid as a compact <code>puzz.link</code>-style URL, ready to open or hand
+      someone directly. If your site uses a different domain or path but the same <code>W/H/data</code> scheme,
+      edit the prefix below.</p>
+    <div class="field" style="margin:12px 0;">
+      <label for="linkPrefix">Link prefix</label>
+      <input type="text" id="linkPrefix" value="https://puzz.link/p?nonogram" style="width:100%;max-width:420px;padding:7px 8px;border:1.5px solid var(--grid-line-strong);border-radius:2px;font-family:var(--mono);font-size:13px;">
+    </div>
+    <div class="meta-row">
+      <span class="meta" id="linkMeta">— </span>
+      <div class="btn-row">
+        <button id="copyLinkBtn" class="primary">Copy link</button>
+        <span class="copy-flash" id="copyLinkFlash">Copied</span>
+      </div>
+    </div>
+    <textarea id="linkOutput" readonly style="min-height:70px;"></textarea>
+  </div>
+
+</div>
+
+<script>
+(function(){
+  let W = 15, H = 15;
+  let grid = []; // grid[r][c] = boolean filled
+
+  const gridTable = document.getElementById('gridTable');
+  const widthInput = document.getElementById('widthInput');
+  const heightInput = document.getElementById('heightInput');
+  const output = document.getElementById('output');
+  const metaInfo = document.getElementById('metaInfo');
+
+  function makeGrid(w, h){
+    grid = [];
+    for(let r=0;r<h;r++){
+      const row = [];
+      for(let c=0;c<w;c++) row.push(false);
+      grid.push(row);
+    }
+  }
+
+  function computeRowClues(){
+    const rowClues = [];
+    for(let r=0;r<H;r++){
+      const runs = [];
+      let run = 0;
+      for(let c=0;c<W;c++){
+        if(grid[r][c]){ run++; }
+        else { if(run>0){ runs.push(run); run=0; } }
+      }
+      if(run>0) runs.push(run);
+      rowClues.push(runs);
+    }
+    return rowClues;
+  }
+
+  function computeColClues(){
+    const colClues = [];
+    for(let c=0;c<W;c++){
+      const runs = [];
+      let run = 0;
+      for(let r=0;r<H;r++){
+        if(grid[r][c]){ run++; }
+        else { if(run>0){ runs.push(run); run=0; } }
+      }
+      if(run>0) runs.push(run);
+      colClues.push(runs);
+    }
+    return colClues;
+  }
+
+  let colClueCells = []; // colClueCells[g][c] -> td element
+  let rowClueCells = []; // rowClueCells[r][k] -> td element
+
+  function renderGrid(){
+    const rowClues = computeRowClues();
+    const colClues = computeColClues();
+    const R = Math.ceil(W/2);
+    const C = Math.ceil(H/2);
+    const CELL_PX = 24;
+
+    gridTable.innerHTML = '';
+    gridTable.style.width = ((R+W) * CELL_PX) + 'px';
+    gridTable.style.height = ((C+H) * CELL_PX) + 'px';
+    colClueCells = [];
+    rowClueCells = [];
+
+    // header rows: C rows of column-clue numbers, bottom-aligned
+    for(let g=0; g<C; g++){
+      const tr = document.createElement('tr');
+      const colCellRow = [];
+      // corner cells (R of them)
+      for(let k=0;k<R;k++){
+        const td = document.createElement('td');
+        td.className = 'corner-cell';
+        if(g===C-1) td.classList.add('boundary-bottom');
+        tr.appendChild(td);
+      }
+      for(let c=0;c<W;c++){
+        const cc = colClues[c];
+        const L = cc.length;
+        const start = C - L;
+        const td = document.createElement('td');
+        td.className = 'clue-cell col-clue';
+        if((c+1)%5===0 && c!==W-1) td.classList.add('sep-right');
+        if(g===C-1) td.classList.add('boundary-bottom');
+        td.textContent = g>=start ? cc[g-start] : '';
+        tr.appendChild(td);
+        colCellRow.push(td);
+      }
+      colClueCells.push(colCellRow);
+      gridTable.appendChild(tr);
+    }
+
+    // board rows
+    for(let r=0;r<H;r++){
+      const tr = document.createElement('tr');
+      const rc = rowClues[r];
+      const L = rc.length;
+      const start = R - L;
+      const rowCellRow = [];
+      for(let k=0;k<R;k++){
+        const td = document.createElement('td');
+        td.className = 'clue-cell';
+        if(k===R-1) td.classList.add('boundary-right');
+        if((r+1)%5===0 && r!==H-1) td.classList.add('sep-bottom');
+        td.textContent = k>=start ? rc[k-start] : '';
+        tr.appendChild(td);
+        rowCellRow.push(td);
+      }
+      rowClueCells.push(rowCellRow);
+      for(let c=0;c<W;c++){
+        const td = document.createElement('td');
+        td.className = 'cell' + (grid[r][c] ? ' filled' : '');
+        if(c===0) td.classList.add('boundary-right'); // visually mirror opposite edge alignment (no-op safe)
+        if((c+1)%5===0 && c!==W-1) td.classList.add('sep-right');
+        if((r+1)%5===0 && r!==H-1) td.classList.add('sep-bottom');
+        td.dataset.r = r;
+        td.dataset.c = c;
+        td.addEventListener('mousedown', (e)=>{
+          e.preventDefault();
+          isPainting = true;
+          paintValue = !grid[r][c];
+          toggleCell(r,c,paintValue);
+        });
+        td.addEventListener('mouseenter', ()=>{
+          if(isPainting) toggleCell(r,c,paintValue);
+        });
+        tr.appendChild(td);
+      }
+      gridTable.appendChild(tr);
+    }
+  }
+
+  function updateClueCells(){
+    const rowClues = computeRowClues();
+    const colClues = computeColClues();
+    const R = Math.ceil(W/2);
+    const C = Math.ceil(H/2);
+
+    for(let g=0; g<C; g++){
+      for(let c=0; c<W; c++){
+        const cc = colClues[c];
+        const L = cc.length;
+        const start = C - L;
+        const td = colClueCells[g] && colClueCells[g][c];
+        if(td) td.textContent = g>=start ? cc[g-start] : '';
+      }
+    }
+    for(let r=0; r<H; r++){
+      const rc = rowClues[r];
+      const L = rc.length;
+      const start = R - L;
+      for(let k=0; k<R; k++){
+        const td = rowClueCells[r] && rowClueCells[r][k];
+        if(td) td.textContent = k>=start ? rc[k-start] : '';
+      }
+    }
+  }
+
+  let isPainting = false;
+  let paintValue = true;
+  document.addEventListener('mouseup', ()=>{ isPainting = false; });
+
+  function toggleCell(r,c,val){
+    grid[r][c] = val;
+    const td = gridTable.querySelector(`td.cell[data-r="${r}"][data-c="${c}"]`);
+    if(td) td.classList.toggle('filled', val);
+    updateClueCells();
+    generateOutput();
+    generateLink();
+  }
+
+  // ---------------- puzz.link-style share link ----------------
+  function encodeValue(v){
+    if(v>=1 && v<=9) return String(v);
+    if(v>=10 && v<=15) return String.fromCharCode(97 + (v-10)); // a-f
+    return '-' + v.toString(16).padStart(2,'0');
+  }
+
+  function encodeGroup(clues, G){
+    const rev = clues.slice().reverse();
+    const s = rev.map(encodeValue).join('');
+    const zeros = G - clues.length;
+    const pad = zeros <= 20
+      ? String.fromCharCode(102 + zeros)          // 'f' + zeros
+      : 'z' + String.fromCharCode(102 + (zeros-20));
+    return s + pad;
+  }
+
+  function generateLink(){
+    const rowClues = computeRowClues();
+    const colClues = computeColClues();
+    const Gcol = Math.ceil(H/2); // column group size depends on grid height
+    const Grow = Math.ceil(W/2); // row group size depends on grid width
+    const data = colClues.map(cc => encodeGroup(cc, Gcol)).join('')
+               + rowClues.map(rc => encodeGroup(rc, Grow)).join('');
+    const prefixRaw = document.getElementById('linkPrefix').value.trim();
+    const prefix = prefixRaw.replace(/\/+$/, '');
+    const url = `${prefix}/${W}/${H}/${data}`;
+    document.getElementById('linkOutput').value = url;
+    document.getElementById('linkMeta').textContent =
+      `${W}×${H} board — ${data.length} data characters — ${url.length} total`;
+  }
+
+  function generateOutput(){
+    const rowClues = computeRowClues();
+    const colClues = computeColClues();
+    const R = Math.ceil(W/2);
+    const C = Math.ceil(H/2);
+    const lines = [];
+
+    for(let g=0; g<C; g++){
+      const tokens = [];
+      for(let k=0;k<R;k++) tokens.push('.');
+      for(let c=0;c<W;c++){
+        const cc = colClues[c];
+        const L = cc.length;
+        const start = C - L;
+        tokens.push(g>=start ? String(cc[g-start]) : '.');
+      }
+      lines.push(tokens.join(' ') + ' ');
+    }
+    for(let r=0;r<H;r++){
+      const rc = rowClues[r];
+      const L = rc.length;
+      const start = R - L;
+      const tokens = [];
+      for(let k=0;k<R;k++) tokens.push(k>=start ? String(rc[k-start]) : '.');
+      for(let c=0;c<W;c++) tokens.push('.');
+      lines.push(tokens.join(' ') + ' ');
+    }
+
+    const text = `pzprv3/nonogram/${H}/${W}/` + lines.join('/') + '/';
+    output.value = text;
+    metaInfo.textContent = `${W}×${H} board — clue area ${R}×${C} — ${text.length} characters`;
+  }
+
+  function rebuildAll(){
+    renderGrid();
+    generateOutput();
+    generateLink();
+  }
+
+  document.getElementById('resizeBtn').addEventListener('click', ()=>{
+    const w = Math.max(1, Math.min(150, parseInt(widthInput.value)||15));
+    const h = Math.max(1, Math.min(150, parseInt(heightInput.value)||15));
+    W = w; H = h;
+    widthInput.value = w; heightInput.value = h;
+    makeGrid(W,H);
+    rebuildAll();
+  });
+
+  document.getElementById('clearBtn').addEventListener('click', ()=>{
+    makeGrid(W,H);
+    rebuildAll();
+  });
+
+  document.getElementById('invertBtn').addEventListener('click', ()=>{
+    for(let r=0;r<H;r++) for(let c=0;c<W;c++) grid[r][c] = !grid[r][c];
+    rebuildAll();
+  });
+
+  document.getElementById('importBtn').addEventListener('click', ()=>{
+    const raw = document.getElementById('importText').value;
+    const rows = raw.split('\n').filter(l => l.trim().length>0 || l.length>0);
+    const cleanRows = raw.split('\n');
+    // trim trailing empty lines
+    while(cleanRows.length && cleanRows[cleanRows.length-1].trim()==='') cleanRows.pop();
+    if(cleanRows.length===0) return;
+    const h = cleanRows.length;
+    const w = Math.max(...cleanRows.map(r=>r.length));
+    W = w; H = h;
+    widthInput.value = w; heightInput.value = h;
+    makeGrid(W,H);
+    for(let r=0;r<h;r++){
+      const line = cleanRows[r];
+      for(let c=0;c<w;c++){
+        const ch = line[c];
+        grid[r][c] = (ch === '#' || ch === 'X' || ch === 'x' || ch === '1');
+      }
+    }
+    rebuildAll();
+  });
+
+  document.getElementById('copyBtn').addEventListener('click', ()=>{
+    output.select();
+    navigator.clipboard.writeText(output.value).then(()=>{
+      const flash = document.getElementById('copyFlash');
+      flash.classList.add('show');
+      setTimeout(()=>flash.classList.remove('show'), 1200);
+    }).catch(()=>{
+      document.execCommand('copy');
+    });
+  });
+
+  document.getElementById('copyLinkBtn').addEventListener('click', ()=>{
+    const linkOutput = document.getElementById('linkOutput');
+    linkOutput.select();
+    navigator.clipboard.writeText(linkOutput.value).then(()=>{
+      const flash = document.getElementById('copyLinkFlash');
+      flash.classList.add('show');
+      setTimeout(()=>flash.classList.remove('show'), 1200);
+    }).catch(()=>{
+      document.execCommand('copy');
+    });
+  });
+
+  document.getElementById('linkPrefix').addEventListener('input', generateLink);
+
+  // ---------------- Screenshot import ----------------
+  const imageInput = document.getElementById('imageInput');
+  const imageFileName = document.getElementById('imageFileName');
+  const importCanvasWrap = document.getElementById('importCanvasWrap');
+  const importCanvas = document.getElementById('importCanvas');
+  const ictx = importCanvas.getContext('2d');
+  const thresholdInput = document.getElementById('thresholdInput');
+  const thresholdVal = document.getElementById('thresholdVal');
+  const invertInput = document.getElementById('invertInput');
+  const applyDetectionBtn = document.getElementById('applyDetectionBtn');
+
+  let sourceImage = null;      // HTMLImageElement, natural size
+  let offCanvas = null, offCtx = null; // full-res copy for sampling
+  let handles = null;          // {tl:{x,y}, br:{x,y}} in DISPLAY canvas coords
+  let draggingHandle = null;
+  let lastDetection = null;    // boolean[][] cache from last computeDetection()
+
+  const HANDLE_R = 8;
+
+  imageInput.addEventListener('change', (e)=>{
+    const file = e.target.files && e.target.files[0];
+    if(!file) return;
+    imageFileName.textContent = file.name;
+    const reader = new FileReader();
+    reader.onload = (ev)=>{
+      const img = new Image();
+      img.onload = ()=>{
+        sourceImage = img;
+        setupImportCanvas();
+      };
+      img.src = ev.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+
+  function setupImportCanvas(){
+    importCanvasWrap.style.display = 'block';
+    const maxW = Math.min(640, importCanvasWrap.clientWidth || 640);
+    const scale = maxW / sourceImage.naturalWidth;
+    importCanvas.width = Math.round(sourceImage.naturalWidth * scale);
+    importCanvas.height = Math.round(sourceImage.naturalHeight * scale);
+
+    // offscreen full-res canvas for accurate sampling
+    offCanvas = document.createElement('canvas');
+    offCanvas.width = sourceImage.naturalWidth;
+    offCanvas.height = sourceImage.naturalHeight;
+    offCtx = offCanvas.getContext('2d');
+    offCtx.drawImage(sourceImage, 0, 0);
+
+    const mx = importCanvas.width * 0.04, my = importCanvas.height * 0.04;
+    handles = {
+      tl: { x: mx, y: my },
+      br: { x: importCanvas.width - mx, y: importCanvas.height - my }
+    };
+    lastDetection = null;
+    drawImportCanvas();
+  }
+
+  function computeDetection(){
+    if(!offCtx || !handles) return null;
+    const scaleX = sourceImage.naturalWidth / importCanvas.width;
+    const scaleY = sourceImage.naturalHeight / importCanvas.height;
+    const x0 = Math.min(handles.tl.x, handles.br.x) * scaleX;
+    const y0 = Math.min(handles.tl.y, handles.br.y) * scaleY;
+    const x1 = Math.max(handles.tl.x, handles.br.x) * scaleX;
+    const y1 = Math.max(handles.tl.y, handles.br.y) * scaleY;
+    const cellW = (x1 - x0) / W;
+    const cellH = (y1 - y0) / H;
+    const threshold = parseInt(thresholdInput.value);
+    const invert = invertInput.checked;
+
+    const result = [];
+    for(let r=0;r<H;r++){
+      const rowArr = [];
+      for(let c=0;c<W;c++){
+        const cx = x0 + (c+0.5)*cellW;
+        const cy = y0 + (r+0.5)*cellH;
+        const pw = Math.max(1, cellW*0.5);
+        const ph = Math.max(1, cellH*0.5);
+        const sx = Math.max(0, Math.round(cx - pw/2));
+        const sy = Math.max(0, Math.round(cy - ph/2));
+        const sw = Math.min(offCanvas.width - sx, Math.round(pw));
+        const sh = Math.min(offCanvas.height - sy, Math.round(ph));
+        let filled = false;
+        if(sw>0 && sh>0){
+          const data = offCtx.getImageData(sx, sy, sw, sh).data;
+          let total = 0, n = 0;
+          for(let i=0;i<data.length;i+=4){
+            total += 0.299*data[i] + 0.587*data[i+1] + 0.114*data[i+2];
+            n++;
+          }
+          const avg = total / n;
+          filled = invert ? (avg > threshold) : (avg < threshold);
+        }
+        rowArr.push(filled);
+      }
+      result.push(rowArr);
+    }
+    return result;
+  }
+
+  function drawImportCanvas(){
+    if(!sourceImage) return;
+    ictx.clearRect(0,0,importCanvas.width, importCanvas.height);
+    ictx.drawImage(sourceImage, 0, 0, importCanvas.width, importCanvas.height);
+
+    const x0 = Math.min(handles.tl.x, handles.br.x);
+    const y0 = Math.min(handles.tl.y, handles.br.y);
+    const x1 = Math.max(handles.tl.x, handles.br.x);
+    const y1 = Math.max(handles.tl.y, handles.br.y);
+
+    // detection preview overlay
+    if(lastDetection){
+      const cellW = (x1-x0)/W, cellH = (y1-y0)/H;
+      ictx.fillStyle = 'rgba(46, 125, 90, 0.45)';
+      for(let r=0;r<H;r++){
+        for(let c=0;c<W;c++){
+          if(lastDetection[r][c]){
+            ictx.fillRect(x0 + c*cellW, y0 + r*cellH, cellW, cellH);
+          }
+        }
+      }
+    }
+
+    // grid lines
+    ictx.strokeStyle = 'rgba(201,137,42,0.9)';
+    ictx.lineWidth = 1;
+    const cellW = (x1-x0)/W, cellH = (y1-y0)/H;
+    ictx.beginPath();
+    for(let c=0;c<=W;c++){
+      ictx.moveTo(x0 + c*cellW, y0);
+      ictx.lineTo(x0 + c*cellW, y1);
+    }
+    for(let r=0;r<=H;r++){
+      ictx.moveTo(x0, y0 + r*cellH);
+      ictx.lineTo(x1, y0 + r*cellH);
+    }
+    ictx.stroke();
+
+    // boundary rect
+    ictx.strokeStyle = '#b9791f';
+    ictx.lineWidth = 2;
+    ictx.strokeRect(x0, y0, x1-x0, y1-y0);
+
+    // handles
+    [handles.tl, handles.br].forEach(h=>{
+      ictx.beginPath();
+      ictx.arc(h.x, h.y, HANDLE_R, 0, Math.PI*2);
+      ictx.fillStyle = '#b9791f';
+      ictx.fill();
+      ictx.lineWidth = 2;
+      ictx.strokeStyle = '#fff';
+      ictx.stroke();
+    });
+  }
+
+  function refreshDetectionPreview(){
+    lastDetection = computeDetection();
+    drawImportCanvas();
+  }
+
+  function canvasPointFromEvent(e){
+    const rect = importCanvas.getBoundingClientRect();
+    const scaleX = importCanvas.width / rect.width;
+    const scaleY = importCanvas.height / rect.height;
+    return {
+      x: (e.clientX - rect.left) * scaleX,
+      y: (e.clientY - rect.top) * scaleY
+    };
+  }
+
+  importCanvas.addEventListener('pointerdown', (e)=>{
+    if(!handles) return;
+    const p = canvasPointFromEvent(e);
+    const dTl = Math.hypot(p.x - handles.tl.x, p.y - handles.tl.y);
+    const dBr = Math.hypot(p.x - handles.br.x, p.y - handles.br.y);
+    if(dTl <= 16 && dTl <= dBr){ draggingHandle = 'tl'; }
+    else if(dBr <= 16){ draggingHandle = 'br'; }
+    if(draggingHandle) importCanvas.setPointerCapture(e.pointerId);
+  });
+  importCanvas.addEventListener('pointermove', (e)=>{
+    if(!draggingHandle || !handles) return;
+    const p = canvasPointFromEvent(e);
+    handles[draggingHandle] = {
+      x: Math.max(0, Math.min(importCanvas.width, p.x)),
+      y: Math.max(0, Math.min(importCanvas.height, p.y))
+    };
+    drawImportCanvas();
+  });
+  importCanvas.addEventListener('pointerup', ()=>{
+    if(draggingHandle) refreshDetectionPreview();
+    draggingHandle = null;
+  });
+  importCanvas.addEventListener('pointerleave', ()=>{
+    if(draggingHandle) refreshDetectionPreview();
+    draggingHandle = null;
+  });
+
+  thresholdInput.addEventListener('input', ()=>{
+    thresholdVal.textContent = thresholdInput.value;
+    refreshDetectionPreview();
+  });
+  invertInput.addEventListener('change', refreshDetectionPreview);
+
+  applyDetectionBtn.addEventListener('click', ()=>{
+    if(!handles) return;
+    const detection = computeDetection();
+    if(!detection) return;
+    grid = detection;
+    lastDetection = detection;
+    rebuildAll();
+    drawImportCanvas();
+  });
+
+  // when board size changes, the import overlay grid (W x H) should follow along
+  document.getElementById('resizeBtn').addEventListener('click', ()=>{
+    if(sourceImage) refreshDetectionPreview();
+  });
+
+  makeGrid(W,H);
+  rebuildAll();
+})();
+</script>
+</body>
+</html>
