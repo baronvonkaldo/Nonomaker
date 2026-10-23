@@ -104,6 +104,7 @@
   }
   .cell.filled{background:var(--blue-deep);}
   .cell:hover{outline:1.5px solid var(--ochre);outline-offset:-1.5px;}
+  .nonogram-table td.cell.brush-preview{outline:1.5px solid var(--ochre);outline-offset:-1.5px;box-shadow:inset 0 0 0 100px rgba(185,121,31,0.28);}
   .clue-cell{
     background:#eef1f4;color:var(--blue-deep);white-space:nowrap;padding:0 2px;
     text-align:center;vertical-align:middle;
@@ -140,6 +141,14 @@
   }
   .file-btn:hover{background:var(--ochre);color:#fff;}
   #importCanvas{cursor:crosshair;background:#fff;touch-action:none;}
+
+  .solve-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:14px 0 4px;}
+  .solve-status{font-size:14px;line-height:1.4;}
+  .solve-status.ok{color:#1e7a3c;font-weight:600;}
+  .solve-status.multi{color:#c62828;font-weight:700;}
+  .solve-status.info{color:var(--ink-soft);}
+  .solve-status .note{display:block;font-weight:400;font-size:12px;color:var(--ink-soft);margin-top:2px;}
+  .nonogram-table td.cell.ambiguous{outline:2px solid #d62828;outline-offset:-2px;box-shadow:inset 0 0 0 100px rgba(214,40,40,0.45);}
 </style>
 </head>
 <body>
@@ -215,6 +224,19 @@
 
   <div class="panel breakout">
     <h2 style="margin:0 0 12px;">3 — Paint / fine-tune the solution</h2>
+    <div class="panel-header-row" style="justify-content:flex-start;gap:20px;">
+      <div class="field">
+        <label for="brushShapeSelect">Brush</label>
+        <select id="brushShapeSelect" style="padding:7px 8px;border:1.5px solid var(--grid-line-strong);border-radius:2px;font-family:var(--sans);font-size:13px;background:#fff;color:var(--ink);">
+          <option value="square" selected>Square</option>
+          <option value="circle">Circle</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="brushSizeInput">Brush size (cells)</label>
+        <input type="number" id="brushSizeInput" min="1" max="50" step="1" value="1">
+      </div>
+    </div>
     <div class="panel-header-row">
       <div class="field">
         <label for="previewModeSelect">Preview grid</label>
@@ -236,7 +258,12 @@
       <table class="nonogram-table" id="gridTable"></table>
       <canvas id="previewCanvas" style="position:absolute;top:0;left:0;pointer-events:none;"></canvas>
     </div>
-    <p class="hint">Click a cell to fill it, click again to clear it. Click-and-drag paints multiple cells at once.
+    <div class="solve-row">
+      <button id="solveBtn" class="primary">Solve</button>
+      <button id="solveStopBtn" class="ghost" style="display:none;">Stop</button>
+      <span id="solveStatus" class="solve-status" role="status" aria-live="polite"></span>
+    </div>
+    <p class="hint">Click to paint with the brush; starting on a filled cell erases instead. Click-and-drag paints continuously.
       Large boards scroll within this panel — it only widens up to 95% of your screen.</p>
   </div>
 
@@ -269,17 +296,18 @@
 
   <div class="panel">
     <h2>6 — Shareable link</h2>
-    <p class="hint">Encodes the same grid as a compact <code>puzz.link</code>-style URL, ready to open or hand
-      someone directly. If your site uses a different domain or path but the same <code>W/H/data</code> scheme,
+    <p class="hint">Encodes the grid as a compact URL for the nonogram site, ready to open or hand
+      someone directly. If you ever switch sites but the link still ends in the same <code>W/H/data</code> scheme,
       edit the prefix below.</p>
     <div class="field" style="margin:12px 0;">
       <label for="linkPrefix">Link prefix</label>
-      <input type="text" id="linkPrefix" value="https://puzz.link/p?nonogram" style="width:100%;max-width:420px;padding:7px 8px;border:1.5px solid var(--grid-line-strong);border-radius:2px;font-family:var(--mono);font-size:13px;">
+      <input type="text" id="linkPrefix" value="https://imsvale.github.io/nonogram/#" style="width:100%;max-width:420px;padding:7px 8px;border:1.5px solid var(--grid-line-strong);border-radius:2px;font-family:var(--mono);font-size:13px;">
     </div>
     <div class="meta-row">
       <span class="meta" id="linkMeta">— </span>
       <div class="btn-row">
         <button id="copyLinkBtn" class="primary">Copy link</button>
+        <button id="copyDiscordBtn" class="primary">Discord link</button>
         <span class="copy-flash" id="copyLinkFlash">Copied</span>
       </div>
     </div>
@@ -287,6 +315,386 @@
   </div>
 
 </div>
+
+<script type="text/js-worker" id="solverWorkerSource">
+// ===========================================================================
+// Nonogram uniqueness analyzer
+//
+// Self-contained (no imports, no DOM) so it can run inside a Web Worker and
+// also be loaded by Node for testing.
+//
+//   analyze(rowClues, colClues, painted, opts) -> result
+//
+//   rowClues / colClues : number[][]  (empty array = blank line)
+//   painted             : Uint8Array(R*C) of 0/1/2 (1 = filled, 2 = empty), or
+//                         null. A known-valid solution (the painted grid). It
+//                         is only used to order the search; correctness never
+//                         depends on it.
+//   opts                : { searchMs, expandMs, onProgress(info), now() }
+//
+//   result.status       : 'unique' | 'multiple' | 'unknown' | 'invalid'
+//   result.ambiguous    : Uint8Array(R*C) mask (1 = cell differs between some
+//                         pair of solutions) when status === 'multiple'
+//   result.complete     : false if the ambiguous mask may be missing cells
+//                         because the time budget ran out
+//
+// Method: per-line dynamic-programming deduction (finds every cell a single
+// line forces) run to a fixpoint, plus depth-first search that stops as soon
+// as it has what it needs (2 solutions, or 1 when probing a single cell).
+// ===========================================================================
+function analyze(rowClues, colClues, painted, opts) {
+  opts = opts || {};
+  var nowFn = opts.now || function () { return Date.now(); };
+  var R = rowClues.length, C = colClues.length, N = R * C;
+  var t0 = nowFn();
+  var searchDeadline = t0 + (opts.searchMs || 120000);
+  var deadline = searchDeadline;
+  var nodes = 0;
+  var phase = 'verdict';
+  var lastProgress = t0;
+
+  var ABORT = { abort: true };
+
+  var maxLen = Math.max(R, C, 1);
+  var S = maxLen + 2;                       // DP row stride
+  var maxK = Math.floor((maxLen + 1) / 2) + 1;
+  var F = new Uint8Array((maxK + 1) * S);   // F[j*S+i]: prefix [0,i) can host blocks 0..j-1
+  var G = new Uint8Array((maxK + 1) * S);   // G[j*S+i]: suffix [i,n) can host blocks j..k-1
+  var emptyPre = new Int32Array(maxLen + 2);
+  var fillDiff = new Int32Array(maxLen + 2);
+  var line = new Uint8Array(maxLen);
+
+  var inStack = new Uint8Array(R + C);
+  var stack = new Int32Array(R + C);
+  var sp = 0;
+
+  function push(L) {
+    if (!inStack[L]) { inStack[L] = 1; stack[sp++] = L; }
+  }
+  function clearStack() {
+    while (sp > 0) inStack[stack[--sp]] = 0;
+  }
+
+  // Deduce everything line L forces. Returns false on contradiction.
+  function processLine(grid, L) {
+    var isRow = L < R;
+    var n = isRow ? C : R;
+    var clue = isRow ? rowClues[L] : colClues[L - R];
+    var k = clue.length;
+    var base = isRow ? L * C : (L - R);
+    var step = isRow ? 1 : C;
+    var unknown = 0, p, idx, i, j;
+
+    for (p = 0, idx = base; p < n; p++, idx += step) {
+      var v = grid[idx];
+      line[p] = v;
+      if (v === 0) unknown++;
+    }
+
+    if (unknown === 0) {          // fully known: just verify it matches the clue
+      var run = 0, ci = 0;
+      for (p = 0; p <= n; p++) {
+        if (p < n && line[p] === 1) { run++; }
+        else if (run > 0) {
+          if (ci >= k || clue[ci] !== run) return false;
+          ci++; run = 0;
+        }
+      }
+      return ci === k;
+    }
+
+    emptyPre[0] = 0;
+    for (p = 0; p < n; p++) emptyPre[p + 1] = emptyPre[p] + (line[p] === 2 ? 1 : 0);
+
+    // Forward table
+    F[0] = 1;
+    for (i = 1; i <= n; i++) F[i] = (F[i - 1] && line[i - 1] !== 1) ? 1 : 0;
+    for (j = 1; j <= k; j++) {
+      var Lj = clue[j - 1], row = j * S, prev = (j - 1) * S;
+      F[row] = 0;
+      for (i = 1; i <= n; i++) {
+        var f = (F[row + i - 1] && line[i - 1] !== 1) ? 1 : 0;
+        if (!f) {
+          var s = i - Lj;
+          if (s >= 0 && emptyPre[i] === emptyPre[s]) {
+            if (j === 1) f = F[s];
+            else if (s >= 1 && line[s - 1] !== 1 && F[prev + s - 1]) f = 1;
+          }
+        }
+        F[row + i] = f;
+      }
+    }
+
+    // Backward table
+    var kr = k * S;
+    G[kr + n] = 1;
+    for (i = n - 1; i >= 0; i--) G[kr + i] = (G[kr + i + 1] && line[i] !== 1) ? 1 : 0;
+    for (j = k - 1; j >= 0; j--) {
+      var Lb = clue[j], rowb = j * S, next = (j + 1) * S;
+      G[rowb + n] = 0;
+      for (i = n - 1; i >= 0; i--) {
+        var g = (G[rowb + i + 1] && line[i] !== 1) ? 1 : 0;
+        if (!g) {
+          var e = i + Lb;
+          if (e <= n && emptyPre[e] === emptyPre[i]) {
+            if (j === k - 1) g = G[next + e];
+            else if (e < n && line[e] !== 1 && G[next + e + 1]) g = 1;
+          }
+        }
+        G[rowb + i] = g;
+      }
+    }
+    if (!G[0]) return false;      // no arrangement fits this line
+
+    // Which cells can be filled? Mark every valid block placement.
+    for (p = 0; p <= n; p++) fillDiff[p] = 0;
+    for (j = 0; j < k; j++) {
+      var Lp = clue[j];
+      for (var s2 = 0; s2 + Lp <= n; s2++) {
+        var e2 = s2 + Lp;
+        if (emptyPre[e2] !== emptyPre[s2]) continue;
+        var okPre = (j === 0) ? F[s2]
+          : (s2 >= 1 && line[s2 - 1] !== 1 && F[j * S + s2 - 1]);
+        if (!okPre) continue;
+        var okSuf = (j === k - 1) ? G[k * S + e2]
+          : (e2 < n && line[e2] !== 1 && G[(j + 1) * S + e2 + 1]);
+        if (!okSuf) continue;
+        fillDiff[s2]++; fillDiff[e2]--;
+      }
+    }
+
+    var cover = 0;
+    for (p = 0, idx = base; p < n; p++, idx += step) {
+      cover += fillDiff[p];
+      if (line[p] !== 0) continue;
+      var canFill = cover > 0;
+      var canEmpty = false;
+      for (j = 0; j <= k; j++) {
+        if (F[j * S + p] && G[j * S + p + 1]) { canEmpty = true; break; }
+      }
+      if (canFill === canEmpty) {
+        if (!canFill) return false;      // neither works: contradiction
+        continue;                        // both possible: still unknown
+      }
+      grid[idx] = canFill ? 1 : 2;
+      push(isRow ? R + p : p);           // the crossing line has new information
+    }
+    return true;
+  }
+
+  // Run line deduction to a fixpoint over whatever lines are queued.
+  function propagate(grid) {
+    while (sp > 0) {
+      var L = stack[--sp];
+      inStack[L] = 0;
+      if (!processLine(grid, L)) { clearStack(); return false; }
+    }
+    return true;
+  }
+
+  function pushAll() {
+    for (var L = 0; L < R + C; L++) push(L);
+  }
+
+  function countUnknown(grid) {
+    var u = 0;
+    for (var i = 0; i < N; i++) if (grid[i] === 0) u++;
+    return u;
+  }
+
+  function tick() {
+    nodes++;
+    if ((nodes & 63) === 0) {
+      var t = nowFn();
+      if (t > deadline) throw ABORT;
+      if (opts.onProgress && t - lastProgress > 250) {
+        lastProgress = t;
+        opts.onProgress({ nodes: nodes, elapsedMs: t - t0, phase: phase });
+      }
+    }
+  }
+
+  // Pick a cell to branch on: first unknown cell in the line with the fewest
+  // unknown cells (a line that is nearly decided makes the strongest guess).
+  function chooseCell(grid) {
+    var rowU = new Int32Array(R), colU = new Int32Array(C), r, c, i = 0;
+    for (r = 0; r < R; r++) for (c = 0; c < C; c++, i++) {
+      if (grid[i] === 0) { rowU[r]++; colU[c]++; }
+    }
+    var best = -1, bestIsRow = true, bestCount = 1 << 30;
+    for (r = 0; r < R; r++) if (rowU[r] > 0 && rowU[r] < bestCount) { bestCount = rowU[r]; best = r; bestIsRow = true; }
+    for (c = 0; c < C; c++) if (colU[c] > 0 && colU[c] < bestCount) { bestCount = colU[c]; best = c; bestIsRow = false; }
+    if (best < 0) return -1;
+    if (bestIsRow) { for (c = 0; c < C; c++) if (grid[best * C + c] === 0) return best * C + c; }
+    else { for (r = 0; r < R; r++) if (grid[r * C + best] === 0) return r * C + best; }
+    return -1;
+  }
+
+  function assign(grid, idx, val) {
+    var g = grid.slice();
+    g[idx] = val;
+    push(Math.floor(idx / C));
+    push(R + (idx % C));
+    return propagate(g) ? g : null;
+  }
+
+  // Depth-first enumeration (explicit stack, so deep searches can't overflow).
+  // `start` must already be at a propagation fixpoint. Values are tried in the
+  // order the guide solution has them, so a search seeded with a known solution
+  // walks straight to it and spends its effort on the alternatives.
+  // nodeCap (optional) abandons the search after that many nodes: the returned
+  // array then has .capped = true.
+  var guide = painted;
+  function enumerate(start, limit, nodeCap) {
+    var sols = [];
+    sols.capped = false;
+    if (countUnknown(start) === 0) { sols.push(start); return sols; }
+    var frames = [], local = 0;
+    function makeFrame(g) {
+      var cell = chooseCell(g);
+      var pref = guide && guide[cell] === 2 ? [2, 1] : [1, 2];
+      return { g: g, cell: cell, order: pref, next: 0 };
+    }
+    frames.push(makeFrame(start));
+    while (frames.length) {
+      var fr = frames[frames.length - 1];
+      if (fr.next >= 2) { frames.pop(); continue; }
+      var val = fr.order[fr.next++];
+      if (nodeCap && ++local > nodeCap) { sols.capped = true; return sols; }
+      tick();
+      var g2 = assign(fr.g, fr.cell, val);
+      if (!g2) continue;
+      if (countUnknown(g2) === 0) {
+        sols.push(g2);
+        if (sols.length >= limit) return sols;
+        continue;
+      }
+      frames.push(makeFrame(g2));
+    }
+    return sols;
+  }
+
+  function result(status, extra) {
+    var out = { status: status, nodes: nodes, elapsedMs: nowFn() - t0 };
+    for (var key in extra) out[key] = extra[key];
+    return out;
+  }
+
+  // ---- Is it unique, and if not, which cells can vary? ----
+  function isSolution(g) {
+    var r, c, run, ci, cl;
+    for (r = 0; r < R; r++) {
+      cl = rowClues[r]; run = 0; ci = 0;
+      for (c = 0; c <= C; c++) {
+        if (c < C && g[r * C + c] === 1) run++;
+        else if (run) { if (ci >= cl.length || cl[ci] !== run) return false; ci++; run = 0; }
+      }
+      if (ci !== cl.length) return false;
+    }
+    for (c = 0; c < C; c++) {
+      cl = colClues[c]; run = 0; ci = 0;
+      for (r = 0; r <= R; r++) {
+        if (r < R && g[r * C + c] === 1) run++;
+        else if (run) { if (ci >= cl.length || cl[ci] !== run) return false; ci++; run = 0; }
+      }
+      if (ci !== cl.length) return false;
+    }
+    return true;
+  }
+
+  var root = new Uint8Array(N);
+  pushAll();
+  if (!propagate(root)) return result('invalid', {});
+  if (opts.log) opts.log('line logic leaves ' + countUnknown(root) + ' of ' + N + ' cells undecided');
+  if (countUnknown(root) === 0) return result('unique', {});
+
+  // A painted grid that doesn't satisfy the clues is useless as a guide.
+  if (guide && !isSolution(guide)) guide = null;
+
+  // Phase 1 - verdict: search for up to two solutions.
+  var sols;
+  try { sols = enumerate(root, 2); }
+  catch (e) { if (e === ABORT) return result('unknown', {}); throw e; }
+  if (sols.length === 0) return result('invalid', {});
+  if (sols.length === 1) return result('unique', {});
+
+  // Phase 2 - which cells can vary? Work relative to a reference solution A.
+  var A = guide || sols[0];
+  guide = A;
+  var mask = new Uint8Array(N);
+  var complete = true, lastPartial = 0, lastAlt = null;
+  function markDiff(B) {
+    lastAlt = B;
+    for (var i = 0; i < N; i++) if (A[i] !== B[i]) mask[i] = 1;
+  }
+  function partial(force) {
+    var t = nowFn();
+    if (opts.onPartial && (force || t - lastPartial > 400)) {
+      lastPartial = t;
+      opts.onPartial({ status: 'multiple', ambiguous: mask.slice(), complete: false });
+    }
+  }
+  markDiff(sols[0]); markDiff(sols[1]);
+  partial(true);                                    // the verdict is already known: show it now
+  deadline = nowFn() + (opts.expandMs || 20000);    // refinement runs on its own budget
+  phase = 'refine';
+
+  function opposite(i) { return A[i] === 1 ? 2 : 1; }
+  function lock(i) {                                // cell i has the same value in every solution
+    root[i] = A[i];
+    push(Math.floor(i / C)); push(R + (i % C));
+    propagate(root);                                // cannot fail: A satisfies everything
+  }
+
+  try {
+    // Cheap pass: try the opposite of A in each undecided cell and run line
+    // logic only. A contradiction proves the cell is determined. Repeat until
+    // nothing changes (every lock can unlock more).
+    var changed = true;
+    while (changed) {
+      changed = false;
+      for (var i = 0; i < N; i++) {
+        if (root[i] !== 0 || mask[i]) continue;
+        tick();
+        if (!assign(root, i, opposite(i))) { lock(i); changed = true; }
+      }
+    }
+    if (opts.log) opts.log('after cheap pass: ' + countUnknown(root) + ' undecided cells');
+
+    // Search pass: is there any solution with this one cell flipped? Each cell
+    // gets a limited number of search nodes; if it can't be settled in that
+    // many we move on and flag the result as possibly incomplete.
+    for (var idx = 0; idx < N; idx++) {
+      if (root[idx] !== 0 || mask[idx]) continue;
+      tick();
+      var g = assign(root, idx, opposite(idx));
+      if (!g) { lock(idx); continue; }
+      var res = countUnknown(g) === 0 ? [g] : enumerate(g, 1, opts.cellNodeCap || 1500);
+      if (res.length) { markDiff(res[0]); partial(false); }
+      else if (res.capped) { complete = false; }
+      else { lock(idx); }
+    }
+  } catch (e) {
+    if (e !== ABORT) throw e;
+    complete = false;
+  }
+
+  var extra = { ambiguous: mask, complete: complete };
+  if (opts.keepAlt) extra.alt = lastAlt;
+  return result('multiple', extra);
+}
+
+self.onmessage = function (e) {
+  var d = e.data;
+  var res = analyze(d.rows, d.cols, d.painted, {
+    searchMs: d.searchMs,
+    expandMs: d.expandMs,
+    onProgress: function (p) { self.postMessage({ type: 'progress', nodes: p.nodes, elapsedMs: p.elapsedMs, phase: p.phase }); },
+    onPartial: function (p) { self.postMessage({ type: 'partial', ambiguous: p.ambiguous }); }
+  });
+  self.postMessage({ type: 'done', result: res });
+};
+</script>
 
 <script>
 (function(){
@@ -340,6 +748,7 @@
     return colClues;
   }
 
+  let cellEls = [];      // cellEls[r][c] -> paintable board td element
   let colClueCells = []; // colClueCells[g][c] -> td element
   let rowClueCells = []; // rowClueCells[r][k] -> td element
 
@@ -351,6 +760,8 @@
     const FONT_PX = Math.max(6, Math.min(13, Math.round(CELL_PX * 0.55)));
 
     gridTable.innerHTML = '';
+    cellEls = [];
+    previewedCells = [];
     gridTable.style.width = ((R+W) * CELL_PX) + 'px';
     gridTable.style.height = ((C+H) * CELL_PX) + 'px';
     colClueCells = [];
@@ -411,6 +822,7 @@
         rowCellRow.push(td);
       }
       rowClueCells.push(rowCellRow);
+      const cellRow = [];
       for(let c=0;c<W;c++){
         const td = document.createElement('td');
         td.className = 'cell' + (grid[r][c] ? ' filled' : '');
@@ -426,16 +838,21 @@
           e.preventDefault();
           isPainting = true;
           paintValue = !grid[r][c];
-          toggleCell(r,c,paintValue);
+          showBrushPreview(r,c);
+          stampBrush(r,c,paintValue);
         });
         td.addEventListener('mouseenter', ()=>{
-          if(isPainting) toggleCell(r,c,paintValue);
+          showBrushPreview(r,c);
+          if(isPainting) stampBrush(r,c,paintValue);
         });
         tr.appendChild(td);
+        cellRow.push(td);
       }
+      cellEls.push(cellRow);
       gridTable.appendChild(tr);
     }
     renderPreview();
+    applyAmbiguousHighlights();
   }
 
   function renderPreview(){
@@ -545,10 +962,62 @@
   let paintValue = true;
   document.addEventListener('mouseup', ()=>{ isPainting = false; });
 
-  function toggleCell(r,c,val){
-    grid[r][c] = val;
-    const td = gridTable.querySelector(`td.cell[data-r="${r}"][data-c="${c}"]`);
-    if(td) td.classList.toggle('filled', val);
+  // ---------------- brushes ----------------
+  let brushShape = 'square';
+  let brushSize = 1;
+  let previewedCells = []; // cells currently outlined by the hover preview
+
+  // Cells covered by the brush when centered on (r0,c0), clipped to the board.
+  // For even sizes the "center" falls between cells, so the footprint extends
+  // one extra cell down/right. Circles use the distance from that center.
+  function brushCells(r0, c0){
+    const n = brushSize;
+    const lo = -Math.floor((n-1)/2), hi = Math.floor(n/2);
+    const mid = (lo+hi)/2;
+    const rad = n/2;
+    const limit = Math.max(0, rad*rad - 0.5); // trims corners so small circles look round
+    const out = [];
+    for(let dr=lo; dr<=hi; dr++){
+      for(let dc=lo; dc<=hi; dc++){
+        if(brushShape === 'circle'){
+          const a = dr-mid, b = dc-mid;
+          if(a*a + b*b > limit) continue;
+        }
+        const r = r0+dr, c = c0+dc;
+        if(r<0 || r>=H || c<0 || c>=W) continue;
+        out.push([r,c]);
+      }
+    }
+    return out;
+  }
+
+  function clearBrushPreview(){
+    for(const [r,c] of previewedCells){
+      const td = cellEls[r] && cellEls[r][c];
+      if(td) td.classList.remove('brush-preview');
+    }
+    previewedCells = [];
+  }
+
+  function showBrushPreview(r0, c0){
+    clearBrushPreview();
+    if(brushSize <= 1) return; // single cell already gets the normal hover outline
+    previewedCells = brushCells(r0, c0);
+    for(const [r,c] of previewedCells) cellEls[r][c].classList.add('brush-preview');
+  }
+
+  // Paint (val=true) or erase (val=false) the whole brush footprint, then
+  // refresh clues, previews and outputs once for the whole stamp.
+  function stampBrush(r0, c0, val){
+    let changed = false;
+    for(const [r,c] of brushCells(r0, c0)){
+      if(grid[r][c] !== val){
+        grid[r][c] = val;
+        cellEls[r][c].classList.toggle('filled', val);
+        changed = true;
+      }
+    }
+    if(!changed) return;
     updateClueCells();
     renderPreview();
     generateOutput();
@@ -589,15 +1058,18 @@
     const Grow = Math.ceil(W/2); // row group size depends on grid width
     const data = colClues.map(cc => encodeGroup(cc, Gcol)).join('')
                + rowClues.map(rc => encodeGroup(rc, Grow)).join('');
-    const prefixRaw = document.getElementById('linkPrefix').value.trim();
-    const prefix = prefixRaw.replace(/\/+$/, '');
-    const url = `${prefix}/${W}/${H}/${data}`;
+    const prefix = document.getElementById('linkPrefix').value.trim();
+    // Prefixes ending in '#' or '/' already act as the separator
+    // (e.g. https://imsvale.github.io/nonogram/#15/15/...); otherwise add one.
+    const sep = /[#\/]$/.test(prefix) ? '' : '/';
+    const url = `${prefix}${sep}${W}/${H}/${data}`;
     document.getElementById('linkOutput').value = url;
     document.getElementById('linkMeta').textContent =
       `${W}×${H} board — ${data.length} data characters — ${url.length} total`;
   }
 
   function generateOutput(){
+    clearSolveResult();
     const rowClues = computeRowClues();
     const colClues = computeColClues();
     const R = Math.ceil(W/2);
@@ -665,6 +1137,24 @@
   applyOnEnter(heightInput, document.getElementById('resizeBtn'));
   applyOnEnter(document.getElementById('cellSizeInput'), document.getElementById('cellSizeBtn'));
 
+  document.getElementById('brushShapeSelect').addEventListener('change', (e)=>{
+    brushShape = e.target.value;
+    clearBrushPreview();
+  });
+  const brushSizeInput = document.getElementById('brushSizeInput');
+  function applyBrushSize(){
+    const n = parseInt(brushSizeInput.value);
+    if(isNaN(n)) return; // let the user keep typing; clamp on blur
+    brushSize = Math.max(1, Math.min(50, n));
+    clearBrushPreview();
+  }
+  brushSizeInput.addEventListener('input', applyBrushSize);
+  brushSizeInput.addEventListener('change', ()=>{
+    applyBrushSize();
+    brushSizeInput.value = brushSize;
+  });
+  gridTable.addEventListener('mouseleave', clearBrushPreview);
+
   document.getElementById('previewModeSelect').addEventListener('change', (e)=>{
     previewMode = e.target.value;
     renderPreview();
@@ -722,6 +1212,22 @@
       setTimeout(()=>flash.classList.remove('show'), 1200);
     }).catch(()=>{
       document.execCommand('copy');
+    });
+  });
+
+  document.getElementById('copyDiscordBtn').addEventListener('click', ()=>{
+    const linkOutput = document.getElementById('linkOutput');
+    const text = '[Imsogram - ' + (W*H) + ' Cells](' + linkOutput.value + ')';
+    const flash = document.getElementById('copyLinkFlash');
+    const done = ()=>{
+      flash.classList.add('show');
+      setTimeout(()=>flash.classList.remove('show'), 1200);
+    };
+    navigator.clipboard.writeText(text).then(done).catch(()=>{
+      const ta = document.createElement('textarea');
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try{ document.execCommand('copy'); done(); }catch(e){}
+      document.body.removeChild(ta);
     });
   });
 
@@ -1008,6 +1514,154 @@
   // when board size changes, the import overlay grid (W x H) should follow along
   document.getElementById('resizeBtn').addEventListener('click', ()=>{
     if(sourceImage) refreshDetectionPreview();
+  });
+
+  // ---------------- Solve: uniqueness check ----------------
+  const solveBtn = document.getElementById('solveBtn');
+  const solveStopBtn = document.getElementById('solveStopBtn');
+  const solveStatus = document.getElementById('solveStatus');
+  let solveWorker = null, solveWorkerUrl = null;
+  let ambiguousMask = null;      // Uint8Array(W*H) of cells that can vary, or null
+  let solveVerdict = null;       // 'multiple' once the verdict is known mid-run
+
+  function setSolveStatus(text, cls, note){
+    solveStatus.className = 'solve-status' + (cls ? ' ' + cls : '');
+    solveStatus.textContent = text;
+    if(note){
+      const n = document.createElement('span');
+      n.className = 'note';
+      n.textContent = note;
+      solveStatus.appendChild(n);
+    }
+  }
+
+  function applyAmbiguousHighlights(){
+    for(let r=0; r<cellEls.length; r++){
+      for(let c=0; c<cellEls[r].length; c++){
+        cellEls[r][c].classList.toggle('ambiguous', !!(ambiguousMask && ambiguousMask[r*W + c]));
+      }
+    }
+  }
+
+  function stopSolveWorker(){
+    if(solveWorker){ solveWorker.terminate(); solveWorker = null; }
+    if(solveWorkerUrl){ URL.revokeObjectURL(solveWorkerUrl); solveWorkerUrl = null; }
+  }
+
+  function finishSolveUi(){
+    solveBtn.disabled = false;
+    solveStopBtn.style.display = 'none';
+  }
+
+  // Called on every edit: a result for the old picture must not linger.
+  function clearSolveResult(){
+    stopSolveWorker();
+    ambiguousMask = null;
+    solveVerdict = null;
+    if(typeof solveStatus !== 'undefined'){
+      setSolveStatus('', '');
+      finishSolveUi();
+      applyAmbiguousHighlights();
+    }
+  }
+
+  function showMultiple(complete, stopped){
+    let count = 0;
+    if(ambiguousMask) for(let i=0; i<ambiguousMask.length; i++) if(ambiguousMask[i]) count++;
+    let note = 'The ' + count + ' highlighted cell' + (count === 1 ? '' : 's') + ' can be filled in more than one way.';
+    if(!complete) note += stopped
+      ? ' Stopped early, so there may be more.'
+      : ' There may be more; the search stopped before checking every cell.';
+    setSolveStatus('This nonogram has MULTIPLE solutions', 'multi', note);
+  }
+
+  function handleSolveResult(res, stopped){
+    finishSolveUi();
+    if(res.status === 'unique'){
+      setSolveStatus('This nonogram has only one solution', 'ok');
+    } else if(res.status === 'multiple'){
+      ambiguousMask = res.ambiguous;
+      applyAmbiguousHighlights();
+      showMultiple(res.complete, stopped);
+    } else if(res.status === 'unknown'){
+      setSolveStatus('Could not decide within the time limit.', 'info',
+        'This puzzle is hard to analyze, which often means it has many solutions.');
+    } else {
+      setSolveStatus('This grid could not be analyzed.', 'info');
+    }
+  }
+
+  function runSolveInline(payload, src){
+    // Fallback when Web Workers are unavailable: blocks the page while it runs.
+    setSolveStatus('Analyzing…', 'info', 'Your browser can not run this in the background, so the page may pause briefly.');
+    setTimeout(()=>{
+      try{
+        const analyze = new Function(src + '\nreturn analyze;')();
+        const res = analyze(payload.rows, payload.cols, payload.painted, { searchMs: 15000, expandMs: 5000 });
+        handleSolveResult(res, false);
+      }catch(err){
+        finishSolveUi();
+        setSolveStatus('Solving failed: ' + err.message, 'info');
+      }
+    }, 30);
+  }
+
+  function startSolve(){
+    clearSolveResult();
+    const rows = computeRowClues(), cols = computeColClues();
+    const painted = new Uint8Array(W*H);
+    for(let r=0; r<H; r++) for(let c=0; c<W; c++) painted[r*W + c] = grid[r][c] ? 1 : 2;
+    const payload = { rows, cols, painted, searchMs: 120000, expandMs: 20000 };
+
+    solveBtn.disabled = true;
+    solveStopBtn.style.display = '';
+    setSolveStatus('Analyzing…', 'info');
+
+    const src = document.getElementById('solverWorkerSource').textContent;
+    try{
+      solveWorkerUrl = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+      solveWorker = new Worker(solveWorkerUrl);
+    }catch(err){
+      stopSolveWorker();
+      solveStopBtn.style.display = 'none';
+      runSolveInline(payload, src);
+      return;
+    }
+    const w = solveWorker;
+    w.onmessage = (e)=>{
+      if(w !== solveWorker) return;               // stale message from an abandoned run
+      const m = e.data;
+      if(m.type === 'progress'){
+        const secs = Math.round(m.elapsedMs/1000);
+        if(solveVerdict === 'multiple') showMultiple(false, false), solveStatus.lastChild.textContent += ' Still checking for more (' + secs + 's)…';
+        else setSolveStatus('Analyzing… ' + secs + 's', 'info');
+      } else if(m.type === 'partial'){
+        solveVerdict = 'multiple';
+        ambiguousMask = m.ambiguous;
+        applyAmbiguousHighlights();
+        showMultiple(false, false);
+        solveStatus.lastChild.textContent += ' Still checking for more…';
+      } else if(m.type === 'done'){
+        stopSolveWorker();
+        handleSolveResult(m.result, false);
+      }
+    };
+    w.onerror = ()=>{
+      if(w !== solveWorker) return;
+      stopSolveWorker();
+      solveStopBtn.style.display = 'none';
+      runSolveInline(payload, src);
+    };
+    w.postMessage(payload);
+  }
+
+  solveBtn.addEventListener('click', startSolve);
+  solveStopBtn.addEventListener('click', ()=>{
+    const hadVerdict = solveVerdict === 'multiple';
+    stopSolveWorker();
+    finishSolveUi();
+    if(hadVerdict) showMultiple(false, true);
+    else setSolveStatus('Stopped before a result was found.', 'info');
   });
 
   makeGrid(W,H);
